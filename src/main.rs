@@ -1,5 +1,6 @@
+use bytesize::ByteSize;
 use color_eyre::Result;
-use dir_size::get_size_in_abbr_human_bytes;
+use dir_size::get_size_in_bytes;
 use homedir::my_home;
 use jwalk::WalkDir;
 use ratatui::{
@@ -7,29 +8,22 @@ use ratatui::{
     crossterm::event::{self, Event, KeyCode, KeyEventKind},
     layout::{Constraint, Layout, Margin, Rect},
     style::{self, Color, Modifier, Style, Stylize},
-    text::Text,
+    text::{Line, Text},
     widgets::{
         Block, BorderType, Cell, HighlightSpacing, Paragraph, Row, Scrollbar, ScrollbarOrientation,
         ScrollbarState, Table, TableState,
     },
 };
 use rayon::prelude::*;
-use std::{
-    fs::{self, remove_dir_all},
-    path::Path,
-};
+use std::{fs::remove_dir_all, path::Path, str::FromStr};
 use style::palette::tailwind;
 use unicode_width::UnicodeWidthStr;
 
 const PALETTES: [tailwind::Palette; 4] = [
-    tailwind::BLUE,
     tailwind::EMERALD,
     tailwind::INDIGO,
     tailwind::RED,
-];
-const INFO_TEXT: [&str; 2] = [
-    "(Esc) quit | (↑) move up | (↓) move down | <BS>(→) next color | (←) previous color",
-    "(Enter) select/deselect | (D) delete selected",
+    tailwind::BLUE,
 ];
 
 const ITEM_HEIGHT: usize = 4;
@@ -108,6 +102,8 @@ struct App {
     colors: TableColors,
     color_index: usize,
     delete_folder: Vec<bool>,
+    sorted_by: u8,
+    selected_size: u64,
 }
 
 impl App {
@@ -129,6 +125,8 @@ impl App {
             color_index: 0,
             items: data_vec,
             delete_folder: delete_files,
+            sorted_by: 0,
+            selected_size: 0,
         }
     }
     pub fn next_row(&mut self) {
@@ -166,12 +164,15 @@ impl App {
             Some(i) => i,
             None => 0,
         };
+        let abc = ByteSize::as_u64(&ByteSize::from_str(&self.items[i].parent_node_module).unwrap());
         if self.delete_folder[i] {
             self.delete_folder[i] = false;
             self.items[i].selected_for_deletion = String::from("  ☐");
+            self.selected_size -= abc;
         } else {
             self.delete_folder[i] = true;
             self.items[i].selected_for_deletion = String::from("  ☑");
+            self.selected_size += abc;
         }
     }
 
@@ -188,7 +189,28 @@ impl App {
         self.colors = TableColors::new(&PALETTES[self.color_index]);
     }
 
+    pub fn sort_by_next_field(&mut self) {
+        match self.sorted_by {
+            0 => {
+                self.items.sort_by_key(|data| data.name.clone());
+                self.sorted_by = 1;
+            }
+            1 => {
+                self.items
+                    .sort_by_key(|data| data.selected_for_deletion.clone());
+                self.sorted_by = 2;
+            }
+            _ => {
+                self.items
+                    .sort_by_key(|data| data.parent_node_module.clone());
+                self.sorted_by = 0;
+            }
+        }
+    }
+
     pub fn remove_directories(&mut self) {
+        let homedir_binding = my_home().unwrap().unwrap();
+        let homedir = homedir_binding.to_str().unwrap();
         // Collect the names of items to remove
         let items_to_remove: Vec<String> = self
             .items
@@ -196,8 +218,10 @@ impl App {
             .into_par_iter()
             .filter_map(|i| {
                 if i.selected_for_deletion == "  ☑" {
-                    let _ = remove_dir_all(Path::new(&i.name));
-                    Some(i.name)
+                    // MOOSE
+                    let file_path = format!("{}{}", homedir, i.name);
+                    let _ = remove_dir_all(Path::new(&file_path));
+                    Some(file_path)
                 } else {
                     None
                 }
@@ -206,7 +230,7 @@ impl App {
 
         // Now remove the items from `self.items` sequentially
         self.items
-            .retain(|data| !items_to_remove.contains(&data.name));
+            .retain(|data| !items_to_remove.contains(&format!("{}{}", homedir, data.name)));
     }
 
     fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
@@ -225,6 +249,8 @@ impl App {
                         }
                         KeyCode::Enter => self.select_for_deletion(),
                         KeyCode::Char('d') => self.remove_directories(),
+                        KeyCode::Char('r') => self.items.reverse(),
+                        KeyCode::Tab => self.sort_by_next_field(),
                         _ => {}
                     }
                 }
@@ -255,12 +281,20 @@ impl App {
             .add_modifier(Modifier::REVERSED)
             .fg(self.colors.selected_cell_style_fg);
 
-        let header = ["Selected", "Name", "Size"]
-            .into_iter()
-            .map(Cell::from)
-            .collect::<Row>()
-            .style(header_style)
-            .height(1);
+        let mut selected_header = "Selected".to_string();
+        if self.selected_size != 0 {
+            selected_header = format!("Selected: \n{}", ByteSize::b(self.selected_size * 8));
+        }
+        let header = [
+            selected_header.to_string(),
+            "Name".to_string(),
+            "Size".to_string(),
+        ]
+        .into_iter()
+        .map(Cell::from)
+        .collect::<Row>()
+        .style(header_style)
+        .height(2);
         let rows = self.items.iter().enumerate().map(|(i, data)| {
             let color = match i % 2 {
                 0 => self.colors.normal_row_color,
@@ -279,9 +313,9 @@ impl App {
             rows,
             [
                 // + 1 is for padding.
-                Constraint::Length(8),
+                Constraint::Length(10),
                 Constraint::Min(self.longest_item_lens.1 + 1),
-                Constraint::Min(1),
+                Constraint::Min(self.longest_item_lens.2 + 1),
             ],
         )
         .header(header)
@@ -314,7 +348,14 @@ impl App {
     }
 
     fn render_footer(&self, frame: &mut Frame, area: Rect) {
-        let info_footer = Paragraph::new(Text::from_iter(INFO_TEXT))
+        let mut info_text: Vec<String> = vec![
+        "(Esc) quit | (↑) move up | (↓) move down | (→) next color | (←) previous color".to_string(),
+        "(Enter) select/deselect | (D) delete selected | (Tab) Sort by next field | (R) Reverse order".to_string(),
+    ];
+
+        let lines = info_text.clone().into_iter().map(Line::from);
+        //println!("{:?}", &info_text);
+        let info_footer = Paragraph::new(Text::from_iter(lines))
             .style(
                 Style::new()
                     .fg(self.colors.row_fg)
@@ -326,11 +367,13 @@ impl App {
                     .border_type(BorderType::Double)
                     .border_style(Style::new().fg(self.colors.footer_border_color)),
             );
-        frame.render_widget(info_footer, area);
+
+        frame.render_widget(info_footer, area)
     }
 }
 
 fn generate_data() -> Vec<Data> {
+    let homedir = my_home().unwrap().unwrap();
     get_array()
         .into_par_iter()
         .filter_map(|mut i| {
@@ -355,10 +398,13 @@ fn generate_data() -> Vec<Data> {
             {
                 return None;
             }
-            let parent = get_size_in_abbr_human_bytes(&Path::new(&i)).expect("REASON");
+            let file_path = format!("{}{}", homedir.to_str().unwrap(), i);
+            let parent = get_size_in_bytes(&Path::new(&file_path)).expect("REASON");
+
+            let folder_size = ByteSize::b(parent);
             Some(Data {
                 name,
-                parent_node_module: parent,
+                parent_node_module: folder_size.to_string(),
                 selected_for_deletion: String::from("  ☐"),
             })
         })
@@ -391,6 +437,7 @@ fn constraint_len_calculator(items: &[Data]) -> (u16, u16, u16) {
 
 fn get_array() -> Vec<String> {
     let mut node_modules: Vec<String> = Vec::new();
+    let homedir = my_home().unwrap().unwrap();
     println!("Loading...");
     for entry in WalkDir::new(my_home().unwrap().unwrap())
         .into_iter()
@@ -398,7 +445,15 @@ fn get_array() -> Vec<String> {
     {
         if entry.file_type().is_dir() && entry.path().ends_with("node_modules/") {
             //println!("{}  ", entry.path().display());
-            node_modules.push(entry.path().to_str().unwrap_or("").to_string())
+            node_modules.push(
+                entry
+                    .path()
+                    .to_str()
+                    .unwrap_or("")
+                    .to_string()
+                    .trim_start_matches(&homedir.to_str().unwrap())
+                    .to_string(),
+            )
         }
     }
     node_modules
