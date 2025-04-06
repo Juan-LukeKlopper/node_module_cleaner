@@ -1,6 +1,7 @@
 use color_eyre::Result;
 use dir_size::get_size_in_abbr_human_bytes;
 use homedir::my_home;
+use jwalk::WalkDir;
 use ratatui::{
     DefaultTerminal, Frame,
     crossterm::event::{self, Event, KeyCode, KeyEventKind},
@@ -19,7 +20,6 @@ use std::{
 };
 use style::palette::tailwind;
 use unicode_width::UnicodeWidthStr;
-use walkdir::WalkDir;
 
 const PALETTES: [tailwind::Palette; 4] = [
     tailwind::BLUE,
@@ -350,6 +350,8 @@ fn generate_data() -> Vec<Data> {
                 || i.contains(".steam")
                 || i.contains(".var")
                 || i.contains(".cargo")
+                || i.contains("/caches/")
+                || i.contains("/Caches/")
             {
                 return None;
             }
