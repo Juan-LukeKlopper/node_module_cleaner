@@ -68,25 +68,25 @@ impl TableColors {
 #[derive(Debug, Clone)]
 struct Data {
     name: String,
-    parent_node_module: String,
+    size: String,
     selected_for_deletion: String,
 }
 
 impl Data {
     const fn ref_array(&self) -> [&String; 3] {
-        [
-            &self.selected_for_deletion,
-            &self.name,
-            &self.parent_node_module,
-        ]
+        [&self.selected_for_deletion, &self.name, &self.size]
     }
 
     fn name(&self) -> &str {
         &self.name
     }
 
-    fn parent(&self) -> &str {
-        &self.parent_node_module
+    fn size_as_bytesize(&self) -> &str {
+        &self.size
+    }
+
+    fn size_as_bytes(&self) -> &str {
+        &self.size
     }
 
     fn select(&self) -> &str {
@@ -103,7 +103,7 @@ struct App {
     color_index: usize,
     delete_folder: Vec<bool>,
     sorted_by: u8,
-    selected_size: u64,
+    selected_size: ByteSize,
 }
 
 impl App {
@@ -126,7 +126,7 @@ impl App {
             items: data_vec,
             delete_folder: delete_files,
             sorted_by: 0,
-            selected_size: 0,
+            selected_size: bytesize::ByteSize(0),
         }
     }
     pub fn next_row(&mut self) {
@@ -164,15 +164,17 @@ impl App {
             Some(i) => i,
             None => 0,
         };
-        let abc = ByteSize::as_u64(&ByteSize::from_str(&self.items[i].parent_node_module).unwrap());
+        //                let abc = ByteSize::as_u64(&ByteSize::from_str(&self.items[i].size).unwrap());
+        let abc = &ByteSize::from_str(&self.items[i].size).unwrap();
+
         if self.delete_folder[i] {
             self.delete_folder[i] = false;
             self.items[i].selected_for_deletion = String::from("  ☐");
-            self.selected_size -= abc;
+            self.selected_size -= *abc;
         } else {
             self.delete_folder[i] = true;
             self.items[i].selected_for_deletion = String::from("  ☑");
-            self.selected_size += abc;
+            self.selected_size += *abc;
         }
     }
 
@@ -201,8 +203,7 @@ impl App {
                 self.sorted_by = 2;
             }
             _ => {
-                self.items
-                    .sort_by_key(|data| data.parent_node_module.clone());
+                self.items.sort_by_key(|data| data.size.clone());
                 self.sorted_by = 0;
             }
         }
@@ -282,8 +283,8 @@ impl App {
             .fg(self.colors.selected_cell_style_fg);
 
         let mut selected_header = "Selected".to_string();
-        if self.selected_size != 0 {
-            selected_header = format!("Selected: \n{}", ByteSize::b(self.selected_size * 8));
+        if self.selected_size != bytesize::ByteSize(0) {
+            selected_header = format!("Selected: \n{}", self.selected_size);
         }
         let header = [
             selected_header.to_string(),
@@ -348,7 +349,7 @@ impl App {
     }
 
     fn render_footer(&self, frame: &mut Frame, area: Rect) {
-        let mut info_text: Vec<String> = vec![
+        let info_text: Vec<String> = vec![
         "(Esc) quit | (↑) move up | (↓) move down | (→) next color | (←) previous color".to_string(),
         "(Enter) select/deselect | (D) delete selected | (Tab) Sort by next field | (R) Reverse order".to_string(),
     ];
@@ -404,7 +405,7 @@ fn generate_data() -> Vec<Data> {
             let folder_size = ByteSize::b(parent);
             Some(Data {
                 name,
-                parent_node_module: folder_size.to_string(),
+                size: folder_size.to_string(),
                 selected_for_deletion: String::from("  ☐"),
             })
         })
@@ -420,7 +421,7 @@ fn constraint_len_calculator(items: &[Data]) -> (u16, u16, u16) {
         .unwrap_or(0);
     let parent_len = items
         .par_iter()
-        .map(Data::parent)
+        .map(Data::size_as_bytesize)
         .map(UnicodeWidthStr::width)
         .max()
         .unwrap_or(0);
@@ -468,13 +469,13 @@ mod tests {
         let test_data = vec![
             Data {
                 name: "Emirhan Tala".to_string(),
-                parent_node_module: "Cambridgelaan 6XX\n3584 XX Utrecht".to_string(),
+                size: "Cambridgelaan 6XX\n3584 XX Utrecht".to_string(),
                 selected_for_deletion: "true".to_string(),
             },
             Data {
                 name: "thistextis26characterslong".to_string(),
-                parent_node_module:
-                    "this line is 31 characters long\nbottom line is 33 characters long".to_string(),
+                size: "this line is 31 characters long\nbottom line is 33 characters long"
+                    .to_string(),
                 selected_for_deletion: "true".to_string(),
             },
         ];
