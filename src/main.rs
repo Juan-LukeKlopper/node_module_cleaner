@@ -103,6 +103,7 @@ struct App {
     color_index: usize,
     delete_folder: Vec<bool>,
     sorted_by: u8,
+    sort_reversed: bool,
     selected_size: ByteSize,
 }
 
@@ -126,6 +127,7 @@ impl App {
             items: data_vec,
             delete_folder: delete_files,
             sorted_by: 0,
+            sort_reversed: false,
             selected_size: bytesize::ByteSize(0),
         }
     }
@@ -192,6 +194,7 @@ impl App {
     }
 
     pub fn sort_by_next_field(&mut self) {
+        self.sort_reversed = false;
         match self.sorted_by {
             0 => {
                 self.items.sort_by_key(|data| data.name.clone());
@@ -250,7 +253,10 @@ impl App {
                         }
                         KeyCode::Enter => self.select_for_deletion(),
                         KeyCode::Char('d') => self.remove_directories(),
-                        KeyCode::Char('r') => self.items.reverse(),
+                        KeyCode::Char('r') => {
+                            self.items.reverse();
+                            self.sort_reversed = !self.sort_reversed;
+                        }
                         KeyCode::Tab => self.sort_by_next_field(),
                         _ => {}
                     }
@@ -282,14 +288,29 @@ impl App {
             .add_modifier(Modifier::REVERSED)
             .fg(self.colors.selected_cell_style_fg);
 
+        let sort_arrow = if self.sort_reversed { "↓" } else { "↑" };
         let mut selected_header = "Selected".to_string();
+        if self.sorted_by == 2 {
+            selected_header.push(' ');
+            selected_header.push_str(sort_arrow);
+        }
         if self.selected_size != bytesize::ByteSize(0) {
-            selected_header = format!("Selected: \n{}", self.selected_size);
+            selected_header.push_str(&format!("\n{}", self.selected_size));
+        }
+        let mut name_header = "Name".to_string();
+        if self.sorted_by == 1 {
+            name_header.push(' ');
+            name_header.push_str(sort_arrow);
+        }
+        let mut size_header = "Size".to_string();
+        if self.sorted_by == 0 {
+            size_header.push(' ');
+            size_header.push_str(sort_arrow);
         }
         let header = [
-            selected_header.to_string(),
-            "Name".to_string(),
-            "Size".to_string(),
+            selected_header,
+            name_header,
+            size_header,
         ]
         .into_iter()
         .map(Cell::from)
@@ -351,7 +372,7 @@ impl App {
     fn render_footer(&self, frame: &mut Frame, area: Rect) {
         let info_text: Vec<String> = vec![
         "(Esc) quit | (↑) move up | (↓) move down | (→) next color | (←) previous color".to_string(),
-        "(Enter) select/deselect | (D) delete selected | (Tab) Sort by next field | (R) Reverse order".to_string(),
+        "(Enter) select/deselect | (D) delete selected | (Tab) Sort by next field ↑ | (R) Reverse order ↓".to_string(),
     ];
 
         let lines = info_text.clone().into_iter().map(Line::from);
@@ -450,12 +471,12 @@ fn get_array() -> Vec<String> {
         .filter_map(|e| e.ok())
         .filter(|entry| entry.file_type().is_dir() && entry.path().ends_with("node_modules"))
         .map(|entry| {
-                entry
-                    .path()
-                    .to_str()
-                    .unwrap_or("")
-                    .to_string()
-                    .trim_start_matches(&homedir.to_str().unwrap())
+            entry
+                .path()
+                .to_str()
+                .unwrap_or("")
+                .to_string()
+                .trim_start_matches(&homedir.to_str().unwrap())
                 .to_string()
         })
         .collect()
