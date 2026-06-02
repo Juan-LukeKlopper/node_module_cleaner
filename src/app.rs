@@ -1,0 +1,388 @@
+use bytesize::ByteSize;
+use color_eyre::Result;
+use dir_size::get_size_in_bytes;
+use homedir::my_home;
+use ratatui::{
+    DefaultTerminal, Frame,
+    crossterm::event::{self, Event, KeyCode, KeyEventKind},
+    layout::{Constraint, Layout, Margin, Rect},
+    style::{Modifier, Style, Stylize, palette::tailwind},
+    text::{Line, Text},
+    widgets::{
+        Block, BorderType, Cell, HighlightSpacing, Paragraph, Row, Scrollbar, ScrollbarOrientation,
+        ScrollbarState, Table, TableState,
+    },
+};
+use rayon::prelude::*;
+use std::{fs::remove_dir_all, path::Path, str::FromStr};
+use unicode_width::UnicodeWidthStr;
+
+use crate::model::{Data, TableColors};
+use crate::scanner::get_array;
+
+const PALETTES: [tailwind::Palette; 4] = [
+    tailwind::EMERALD,
+    tailwind::INDIGO,
+    tailwind::RED,
+    tailwind::BLUE,
+];
+
+const ITEM_HEIGHT: usize = 4;
+
+pub struct App {
+    state: TableState,
+    items: Vec<Data>,
+    longest_item_lens: (u16, u16, u16),
+    scroll_state: ScrollbarState,
+    colors: TableColors,
+    color_index: usize,
+    delete_folder: Vec<bool>,
+    sorted_by: u8,
+    sort_reversed: bool,
+    selected_size: ByteSize,
+}
+
+impl App {
+    pub fn new() -> Self {
+        let data_vec = generate_data();
+        let delete_files: Vec<bool> = vec![false; data_vec.len()];
+        let mut scroll_bar_length = 0;
+        if !data_vec.is_empty() {
+            scroll_bar_length = data_vec.len() - 1;
+        }
+        Self {
+            state: TableState::default().with_selected(0),
+            longest_item_lens: constraint_len_calculator(&data_vec),
+            scroll_state: ScrollbarState::new(scroll_bar_length * ITEM_HEIGHT),
+            colors: TableColors::new(&PALETTES[0]),
+            color_index: 0,
+            items: data_vec,
+            delete_folder: delete_files,
+            sorted_by: 0,
+            sort_reversed: false,
+            selected_size: bytesize::ByteSize(0),
+        }
+    }
+
+    pub fn next_row(&mut self) {
+        let i = match self.state.selected() {
+            Some(i) => {
+                if i >= self.items.len() - 1 {
+                    0
+                } else {
+                    i + 1
+                }
+            }
+            None => 0,
+        };
+        self.state.select(Some(i));
+        self.scroll_state = self.scroll_state.position(i * ITEM_HEIGHT);
+    }
+
+    pub fn previous_row(&mut self) {
+        let i = match self.state.selected() {
+            Some(i) => {
+                if i == 0 {
+                    self.items.len() - 1
+                } else {
+                    i - 1
+                }
+            }
+            None => 0,
+        };
+        self.state.select(Some(i));
+        self.scroll_state = self.scroll_state.position(i * ITEM_HEIGHT);
+    }
+
+    pub fn select_for_deletion(&mut self) {
+        let i = self.state.selected().unwrap_or_default();
+        let abc = &ByteSize::from_str(&self.items[i].size).unwrap();
+
+        if self.delete_folder[i] {
+            self.delete_folder[i] = false;
+            self.items[i].selected_for_deletion = String::from("  ☐");
+            self.selected_size -= *abc;
+        } else {
+            self.delete_folder[i] = true;
+            self.items[i].selected_for_deletion = String::from("  ☑");
+            self.selected_size += *abc;
+        }
+    }
+
+    pub fn next_color(&mut self) {
+        self.color_index = (self.color_index + 1) % PALETTES.len();
+    }
+
+    pub fn previous_color(&mut self) {
+        let count = PALETTES.len();
+        self.color_index = (self.color_index + count - 1) % count;
+    }
+
+    pub fn set_colors(&mut self) {
+        self.colors = TableColors::new(&PALETTES[self.color_index]);
+    }
+
+    pub fn sort_by_next_field(&mut self) {
+        self.sort_reversed = false;
+        match self.sorted_by {
+            0 => {
+                self.items.sort_by_key(|data| data.name.clone());
+                self.sorted_by = 1;
+            }
+            1 => {
+                self.items
+                    .sort_by_key(|data| data.selected_for_deletion.clone());
+                self.sorted_by = 2;
+            }
+            _ => {
+                self.items.sort_by_key(|data| data.size.clone());
+                self.sorted_by = 0;
+            }
+        }
+    }
+
+    pub fn remove_directories(&mut self) {
+        let homedir_binding = my_home().unwrap().unwrap();
+        let homedir = homedir_binding.to_str().unwrap();
+        let items_to_remove: Vec<String> = self
+            .items
+            .clone()
+            .into_par_iter()
+            .filter_map(|i| {
+                if i.selected_for_deletion == "  ☑" {
+                    let file_path = format!("{}{}", homedir, i.name);
+                    let _ = remove_dir_all(Path::new(&file_path));
+                    Some(file_path)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        self.items
+            .retain(|data| !items_to_remove.contains(&format!("{}{}", homedir, data.name)));
+    }
+
+    pub fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
+        loop {
+            terminal.draw(|frame| self.draw(frame))?;
+
+            if let Event::Key(key) = event::read()?
+                && key.kind == KeyEventKind::Press
+            {
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                    KeyCode::Char('j') | KeyCode::Down => self.next_row(),
+                    KeyCode::Char('k') | KeyCode::Up => self.previous_row(),
+                    KeyCode::Char('l') | KeyCode::Right => self.next_color(),
+                    KeyCode::Char('h') | KeyCode::Left => {
+                        self.previous_color();
+                    }
+                    KeyCode::Enter => self.select_for_deletion(),
+                    KeyCode::Char('d') => self.remove_directories(),
+                    KeyCode::Char('r') => {
+                        self.items.reverse();
+                        self.sort_reversed = !self.sort_reversed;
+                    }
+                    KeyCode::Tab => self.sort_by_next_field(),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn draw(&mut self, frame: &mut Frame) {
+        let vertical = &Layout::vertical([Constraint::Min(5), Constraint::Length(4)]);
+        let rects = vertical.split(frame.area());
+
+        self.set_colors();
+
+        self.render_table(frame, rects[0]);
+        self.render_scrollbar(frame, rects[0]);
+        self.render_footer(frame, rects[1]);
+    }
+
+    fn render_table(&mut self, frame: &mut Frame, area: Rect) {
+        let header_style = Style::default()
+            .fg(self.colors.header_fg)
+            .bg(self.colors.header_bg);
+        let selected_row_style = Style::default()
+            .add_modifier(Modifier::REVERSED)
+            .fg(self.colors.selected_row_style_fg);
+        let selected_col_style = Style::default().fg(self.colors.selected_column_style_fg);
+        let selected_cell_style = Style::default()
+            .add_modifier(Modifier::REVERSED)
+            .fg(self.colors.selected_cell_style_fg);
+
+        let sort_arrow = if self.sort_reversed { "↓" } else { "↑" };
+        let mut selected_header = "Selected".to_string();
+        if self.sorted_by == 2 {
+            selected_header.push(' ');
+            selected_header.push_str(sort_arrow);
+        }
+        if self.selected_size != bytesize::ByteSize(0) {
+            selected_header.push_str(&format!("\n{}", self.selected_size));
+        }
+        let mut name_header = "Name".to_string();
+        if self.sorted_by == 1 {
+            name_header.push(' ');
+            name_header.push_str(sort_arrow);
+        }
+        let mut size_header = "Size".to_string();
+        if self.sorted_by == 0 {
+            size_header.push(' ');
+            size_header.push_str(sort_arrow);
+        }
+        let header = [selected_header, name_header, size_header]
+            .into_iter()
+            .map(Cell::from)
+            .collect::<Row>()
+            .style(header_style)
+            .height(2);
+        let rows = self.items.iter().enumerate().map(|(i, data)| {
+            let color = match i % 2 {
+                0 => self.colors.normal_row_color,
+                _ => self.colors.alt_row_color,
+            };
+            let item = data.ref_array();
+            item.into_iter()
+                .map(|content| Cell::from(Text::from(format!("\n{content}\n"))))
+                .collect::<Row>()
+                .style(Style::new().fg(self.colors.row_fg).bg(color))
+                .height(4)
+        });
+        let bar = "";
+        let t = Table::new(
+            rows,
+            [
+                Constraint::Length(10),
+                Constraint::Min(self.longest_item_lens.1 + 1),
+                Constraint::Min(self.longest_item_lens.2 + 1),
+            ],
+        )
+        .header(header)
+        .row_highlight_style(selected_row_style)
+        .column_highlight_style(selected_col_style)
+        .cell_highlight_style(selected_cell_style)
+        .highlight_symbol(Text::from(vec![
+            "".into(),
+            bar.into(),
+            bar.into(),
+            "".into(),
+        ]))
+        .bg(self.colors.buffer_bg)
+        .highlight_spacing(HighlightSpacing::Always);
+        frame.render_stateful_widget(t, area, &mut self.state);
+    }
+
+    fn render_scrollbar(&mut self, frame: &mut Frame, area: Rect) {
+        frame.render_stateful_widget(
+            Scrollbar::default()
+                .orientation(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None),
+            area.inner(Margin {
+                vertical: 1,
+                horizontal: 1,
+            }),
+            &mut self.scroll_state,
+        );
+    }
+
+    fn render_footer(&self, frame: &mut Frame, area: Rect) {
+        let info_text: Vec<String> = vec![
+            "(Esc) quit | (↑) move up | (↓) move down | (→) next color | (←) previous color"
+                .to_string(),
+            "(Enter) select/deselect | (D) delete selected | (Tab) Sort by next field ↑ | (R) Reverse order ↓"
+                .to_string(),
+        ];
+
+        let lines = info_text.into_iter().map(Line::from);
+        let info_footer = Paragraph::new(Text::from_iter(lines))
+            .style(
+                Style::new()
+                    .fg(self.colors.row_fg)
+                    .bg(self.colors.buffer_bg),
+            )
+            .centered()
+            .block(
+                Block::bordered()
+                    .border_type(BorderType::Double)
+                    .border_style(Style::new().fg(self.colors.footer_border_color)),
+            );
+
+        frame.render_widget(info_footer, area)
+    }
+}
+
+fn generate_data() -> Vec<Data> {
+    let homedir = my_home().unwrap().unwrap();
+    get_array()
+        .into_par_iter()
+        .filter_map(|i| {
+            let name = i.clone();
+            let file_path = format!("{}{}", homedir.to_str().unwrap(), i);
+            let parent = get_size_in_bytes(Path::new(&file_path)).expect("REASON");
+
+            let folder_size = ByteSize::b(parent);
+            Some(Data {
+                name,
+                size: folder_size.to_string(),
+                selected_for_deletion: String::from("  ☐"),
+            })
+        })
+        .collect()
+}
+
+fn constraint_len_calculator(items: &[Data]) -> (u16, u16, u16) {
+    let name_len = items
+        .par_iter()
+        .map(Data::name)
+        .map(UnicodeWidthStr::width)
+        .max()
+        .unwrap_or(0);
+    let parent_len = items
+        .par_iter()
+        .map(Data::size_as_bytesize)
+        .map(UnicodeWidthStr::width)
+        .max()
+        .unwrap_or(0);
+    let selected_len = items
+        .par_iter()
+        .map(Data::select)
+        .map(UnicodeWidthStr::width)
+        .max()
+        .unwrap_or(0);
+
+    #[allow(clippy::cast_possible_truncation)]
+    (selected_len as u16, name_len as u16, parent_len as u16)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::model::Data;
+
+    use super::constraint_len_calculator;
+
+    #[test]
+    fn constraint_len_calculator_works() {
+        let test_data = vec![
+            Data {
+                name: "Emirhan Tala".to_string(),
+                size: "Cambridgelaan 6XX\n3584 XX Utrecht".to_string(),
+                selected_for_deletion: "true".to_string(),
+            },
+            Data {
+                name: "thistextis26characterslong".to_string(),
+                size: "this line is 31 characters long\nbottom line is 33 characters long"
+                    .to_string(),
+                selected_for_deletion: "true".to_string(),
+            },
+        ];
+        let (selected_len, name_len, size_len) = constraint_len_calculator(&test_data);
+
+        assert_eq!(4, selected_len);
+        assert_eq!(26, name_len);
+        assert_eq!(65, size_len);
+    }
+}
