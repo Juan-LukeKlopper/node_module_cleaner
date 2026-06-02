@@ -1,6 +1,6 @@
 [package]
 name = "node-module-finder-rs"
-version = "0.1.1"
+version = "0.1.2"
 description = "A tool to help web developers find and remove all the unused node_modules folders, please note it ignores all node_modules within .cache, .npm, .nvm and .vscode directories"
 authors = ["Juan-LukeKlopper <jlklopper@protonmail.com>"]
 license = "MIT"
@@ -8,9 +8,9 @@ edition = "2024"
 
 [dependencies]
 color-eyre = "0.6.3"
-crossterm = "0.28.1"
-ratatui = "0.29.0"
-unicode-width = "0.2.0"
+crossterm = "0.29.0"
+ratatui = "0.30.0"
+unicode-width = "0.2.2"
 itertools = "0.14.0"
 rayon = "1.10.0"
 dir-size = "0.1.1"
