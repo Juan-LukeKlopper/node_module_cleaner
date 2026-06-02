@@ -85,10 +85,6 @@ impl Data {
         &self.size
     }
 
-    fn size_as_bytes(&self) -> &str {
-        &self.size
-    }
-
     fn select(&self) -> &str {
         &self.selected_for_deletion
     }
@@ -110,12 +106,9 @@ struct App {
 impl App {
     fn new() -> Self {
         let data_vec = generate_data();
-        let mut delete_files: Vec<bool> = Vec::new();
-        for _ in 0..data_vec.len() {
-            delete_files.push(false);
-        }
+        let delete_files: Vec<bool> = vec![false; data_vec.len()];
         let mut scroll_bar_length = 0;
-        if data_vec.len() != 0 {
+        if !data_vec.is_empty() {
             scroll_bar_length = data_vec.len() - 1;
         }
         Self {
@@ -162,10 +155,7 @@ impl App {
     }
 
     pub fn select_for_deletion(&mut self) {
-        let i = match self.state.selected() {
-            Some(i) => i,
-            None => 0,
-        };
+        let i = self.state.selected().unwrap_or_default();
         //                let abc = ByteSize::as_u64(&ByteSize::from_str(&self.items[i].size).unwrap());
         let abc = &ByteSize::from_str(&self.items[i].size).unwrap();
 
@@ -241,25 +231,25 @@ impl App {
         loop {
             terminal.draw(|frame| self.draw(frame))?;
 
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                        KeyCode::Char('j') | KeyCode::Down => self.next_row(),
-                        KeyCode::Char('k') | KeyCode::Up => self.previous_row(),
-                        KeyCode::Char('l') | KeyCode::Right => self.next_color(),
-                        KeyCode::Char('h') | KeyCode::Left => {
-                            self.previous_color();
-                        }
-                        KeyCode::Enter => self.select_for_deletion(),
-                        KeyCode::Char('d') => self.remove_directories(),
-                        KeyCode::Char('r') => {
-                            self.items.reverse();
-                            self.sort_reversed = !self.sort_reversed;
-                        }
-                        KeyCode::Tab => self.sort_by_next_field(),
-                        _ => {}
+            if let Event::Key(key) = event::read()?
+                && key.kind == KeyEventKind::Press
+            {
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                    KeyCode::Char('j') | KeyCode::Down => self.next_row(),
+                    KeyCode::Char('k') | KeyCode::Up => self.previous_row(),
+                    KeyCode::Char('l') | KeyCode::Right => self.next_color(),
+                    KeyCode::Char('h') | KeyCode::Left => {
+                        self.previous_color();
                     }
+                    KeyCode::Enter => self.select_for_deletion(),
+                    KeyCode::Char('d') => self.remove_directories(),
+                    KeyCode::Char('r') => {
+                        self.items.reverse();
+                        self.sort_reversed = !self.sort_reversed;
+                    }
+                    KeyCode::Tab => self.sort_by_next_field(),
+                    _ => {}
                 }
             }
         }
@@ -307,16 +297,12 @@ impl App {
             size_header.push(' ');
             size_header.push_str(sort_arrow);
         }
-        let header = [
-            selected_header,
-            name_header,
-            size_header,
-        ]
-        .into_iter()
-        .map(Cell::from)
-        .collect::<Row>()
-        .style(header_style)
-        .height(2);
+        let header = [selected_header, name_header, size_header]
+            .into_iter()
+            .map(Cell::from)
+            .collect::<Row>()
+            .style(header_style)
+            .height(2);
         let rows = self.items.iter().enumerate().map(|(i, data)| {
             let color = match i % 2 {
                 0 => self.colors.normal_row_color,
@@ -401,7 +387,7 @@ fn generate_data() -> Vec<Data> {
         .filter_map(|i| {
             let name = i.clone();
             let file_path = format!("{}{}", homedir.to_str().unwrap(), i);
-            let parent = get_size_in_bytes(&Path::new(&file_path)).expect("REASON");
+            let parent = get_size_in_bytes(Path::new(&file_path)).expect("REASON");
 
             let folder_size = ByteSize::b(parent);
             Some(Data {
@@ -444,25 +430,16 @@ fn get_array() -> Vec<String> {
     WalkDir::new(&homedir)
         .process_read_dir(|_, _, _, children| {
             children.iter_mut().for_each(|r| {
-                if let Ok(entry) = r {
-                    if entry.file_type().is_dir() {
-                        let name = entry.file_name().to_string_lossy();
-                        match name.as_ref() {
-                            "node_modules"
-                            | ".cache"
-                            | ".vscode"
-                            | ".local"
-                            | ".npm"
-                            | ".nvm"
-                            | ".steam"
-                            | ".var"
-                            | ".cargo"
-                            | "caches"
-                            | "Caches" => {
-                                entry.read_children_path = None;
-                            }
-                            _ => {}
+                if let Ok(entry) = r
+                    && entry.file_type().is_dir()
+                {
+                    let name = entry.file_name().to_string_lossy();
+                    match name.as_ref() {
+                        "node_modules" | ".cache" | ".vscode" | ".local" | ".npm" | ".nvm"
+                        | ".steam" | ".var" | ".cargo" | "caches" | "Caches" => {
+                            entry.read_children_path = None;
                         }
+                        _ => {}
                     }
                 }
             });
@@ -476,7 +453,7 @@ fn get_array() -> Vec<String> {
                 .to_str()
                 .unwrap_or("")
                 .to_string()
-                .trim_start_matches(&homedir.to_str().unwrap())
+                .trim_start_matches(homedir.to_str().unwrap())
                 .to_string()
         })
         .collect()
@@ -501,8 +478,7 @@ mod tests {
                 selected_for_deletion: "true".to_string(),
             },
         ];
-        let (selected_len, name_len, size_len) =
-            crate::constraint_len_calculator(&test_data);
+        let (selected_len, name_len, size_len) = crate::constraint_len_calculator(&test_data);
 
         assert_eq!(4, selected_len);
         assert_eq!(26, name_len);
