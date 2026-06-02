@@ -377,28 +377,8 @@ fn generate_data() -> Vec<Data> {
     let homedir = my_home().unwrap().unwrap();
     get_array()
         .into_par_iter()
-        .filter_map(|mut i| {
-            let name = i.clone().to_string();
-            let name_len = i.len();
-            let parent_len = name_len - 13;
-            while i.len() != parent_len {
-                i.pop();
-            }
-            //let string_offset = i;
-            if i.contains("node_modules")
-                || i.contains(".cache")
-                || i.contains(".vscode")
-                || i.contains(".local")
-                || i.contains(".npm")
-                || i.contains(".nvm")
-                || i.contains(".steam")
-                || i.contains(".var")
-                || i.contains(".cargo")
-                || i.contains("/caches/")
-                || i.contains("/Caches/")
-            {
-                return None;
-            }
+        .filter_map(|i| {
+            let name = i.clone();
             let file_path = format!("{}{}", homedir.to_str().unwrap(), i);
             let parent = get_size_in_bytes(&Path::new(&file_path)).expect("REASON");
 
@@ -437,27 +417,48 @@ fn constraint_len_calculator(items: &[Data]) -> (u16, u16, u16) {
 }
 
 fn get_array() -> Vec<String> {
-    let mut node_modules: Vec<String> = Vec::new();
     let homedir = my_home().unwrap().unwrap();
     println!("Loading...");
-    for entry in WalkDir::new(my_home().unwrap().unwrap())
+
+    WalkDir::new(&homedir)
+        .process_read_dir(|_, _, _, children| {
+            children.iter_mut().for_each(|r| {
+                if let Ok(entry) = r {
+                    if entry.file_type().is_dir() {
+                        let name = entry.file_name().to_string_lossy();
+                        match name.as_ref() {
+                            "node_modules"
+                            | ".cache"
+                            | ".vscode"
+                            | ".local"
+                            | ".npm"
+                            | ".nvm"
+                            | ".steam"
+                            | ".var"
+                            | ".cargo"
+                            | "caches"
+                            | "Caches" => {
+                                entry.read_children_path = None;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            });
+        })
         .into_iter()
         .filter_map(|e| e.ok())
-    {
-        if entry.file_type().is_dir() && entry.path().ends_with("node_modules/") {
-            //println!("{}  ", entry.path().display());
-            node_modules.push(
+        .filter(|entry| entry.file_type().is_dir() && entry.path().ends_with("node_modules"))
+        .map(|entry| {
                 entry
                     .path()
                     .to_str()
                     .unwrap_or("")
                     .to_string()
                     .trim_start_matches(&homedir.to_str().unwrap())
-                    .to_string(),
-            )
-        }
-    }
-    node_modules
+                .to_string()
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -479,10 +480,11 @@ mod tests {
                 selected_for_deletion: "true".to_string(),
             },
         ];
-        let (longest_name_len, longest_address_len, _longest_selection_len) =
+        let (selected_len, name_len, size_len) =
             crate::constraint_len_calculator(&test_data);
 
-        assert_eq!(26, longest_name_len);
-        assert_eq!(33, longest_address_len);
+        assert_eq!(4, selected_len);
+        assert_eq!(26, name_len);
+        assert_eq!(65, size_len);
     }
 }
